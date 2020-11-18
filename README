@@ -1,0 +1,17 @@
+Super simple utility to create a header and C file tha contain
+the contents of a file (or files) as a constant char array.
+
+There are tons of progams to do this but I've found all I've tried lacking...
+https://www.devever.net/~hl/incbin
+https://gist.github.com/sivachandran/3a0de157dccef822a230
+
+I really want cmake to "do the right thing" with dependencies, but it doesn't
+with a cmake script (that runs at config time not build time) and xxd
+would be a strong contender... but it's not universally available and there
+are limitations on naming scheme that I don't love.
+
+The main target of this is CMake, so future thoughts are to focus
+on macros and usage there, so there isn't a huge consideration for
+consistency on the constbin command line arguments as long as an
+eventual CMake macro of some sort maintains compatibility
+

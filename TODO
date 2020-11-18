@@ -1,0 +1,24 @@
+There are lots of enhancements that might be nice...
+
+Being able to explicitly name the const array on the command line
+would be nice.
+
+The ability to change input directories, potentially after reading
+some items from a different directory, might be quite useful.
+
+Appending to an existing output file could be handy.
+
+A CMake macro that does all the "right" things to change directories,
+set dependencies, and correctly prefix things would be a good addition.
+
+I begrugingly admit there may be cases where you do want to add 1 to
+the const length and add a trailing null character.
+
+A templating language (perhasp using mustache notation?) wants to
+grow out of this in some unique way.
+
+A file walker that recursively walks a tree could be a good thing.
+
+Creating a map of actual filenames to const values could be useful
+as well.
+
