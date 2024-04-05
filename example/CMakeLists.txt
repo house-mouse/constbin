@@ -10,7 +10,7 @@ SET(STATIC_FILES
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/output.c ${CMAKE_CURRENT_BINARY_DIR}/output.h
                    COMMAND constbin ${CMAKE_CURRENT_BINARY_DIR}/output.c ${CMAKE_CURRENT_BINARY_DIR}/output.h ${STATIC_FILES}
-                   DEPENDS ${STATIC_FILES}
+                   DEPENDS ${STATIC_FILES} constbin
                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 
