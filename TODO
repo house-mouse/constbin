@@ -11,13 +11,13 @@ Appending to an existing output file could be handy.
 A CMake macro that does all the "right" things to change directories,
 set dependencies, and correctly prefix things would be a good addition.
 
-I begrugingly admit there may be cases where you do want to add 1 to
+I begrudgingly admit there may be cases where you do want to add 1 to
 the const length and add a trailing null character.
 
-A templating language (perhasp using mustache notation?) wants to
+A templating language (perhaps using mustache notation?) wants to
 grow out of this in some unique way.
 
-A file walker that recursively walks a tree could be a good thing.
+A file walker that recursively walks a tree could be a good thing. (Done)
 
 Creating a map of actual filenames to const values could be useful
 as well.

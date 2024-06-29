@@ -1,11 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
+#include <map>
 #include <dirent.h>
+#include <filesystem>
 
 #include <string>       // std::string
 #include <iostream>     // std::cout
 #include <sstream>      // std::stringstream, std::stringbuf
+
+#include "constbinutils.hpp"
+#include "blobindex.hpp"
 
 // There are tons of progams to do this but I've found all I've tried lacking...
 // https://www.devever.net/~hl/incbin
@@ -20,122 +25,6 @@
 //
 
 
-//
-// file_to_string
-//
-// Read a file into a std::string
-//
-// read the file 'filename' and return it in the provided 'filestring' argument.
-//
-// If add_terminator is true, add a null terminator to the string and include that in the
-// string length
-//
-// Returns 0 on success
-// Returns -1 is unable to open the file for reading
-// Returns -2 if the file is not able to be read
-//
-
-int file_to_string(std::string &filestring, const char *filename, bool add_terminator=false) {
-    FILE * f = fopen(filename, "rb");
-    if (!f) {
-//        fprintf(stderr, "Unable to open file: %s\n", filename);
-        return -1;
-    }
-    fseek(f, 0, SEEK_END);
-    size_t size = (size_t)ftell(f);
-    fseek(f, 0, SEEK_SET);
-    fprintf(stderr, "%s is %ld bytes long\n", filename, (long)size);
-
-    filestring.resize(size + (add_terminator ? 1 : 0));
-
-    char *buf = (char *)filestring.c_str();
-    if (fread(buf, size, 1, f) != 1) {
-//        fprintf(stderr, "Failed to read %s!\n", filename);
-        fclose(f);
-        return -2;
-    }
-    fclose(f);
-
-    if (add_terminator) {
-        buf[size]=0;
-    }
-    return 0;
-}
-
-//
-// One of our goals is to play well with build systems like make and cmake which
-// may look at modification date/times to try to tell if the contents of a file have
-// changed.  This function writes the data to the filename, but only if it is not
-// able to read the identical data from the file first...
-
-int write_to_file_if_different(const char *filename, const std::string &data) {
-    std::string data_in_file;
-    if (!file_to_string(data_in_file, filename, false)) {
-        // No error, so we were able to read some data...
-        if (data.compare(data_in_file) == 0) {
-            // Data in the file is the same as the data in data... do nothing..
-            return 0;
-        }
-    }
-
-    FILE * out = fopen(filename, "wb");
-    if (NULL == out) {
-        return -1; // unable to open file for writing... check errno for more info...
-    }
-
-    size_t wv = fwrite(data.c_str(), data.size(), 1, out);
-    fclose(out); // success or not, close the file...
-
-    if (1 == wv) { // expect to write 1 record of data.size() length...
-        return 0; // success
-    }
-    
-    return -2; // unable to write data... check errno for more info...
-}
-
-//
-// string_to_hex
-//
-// Convert the string 'input' into hex values suitable for including in a C file.
-//
-// Each line generated can be prefixed with a line_prefix, and each line will contain
-// at most bytes-per_line ehx digits.
-//
-
-void string_to_hex(std::string &hex, const std::string &input, const std::string &line_prefix, int bytes_per_line) {
-
-    size_t max_size = (input.size() / bytes_per_line + 1) *  (5 * bytes_per_line + line_prefix.size() + 1);
-
-    hex.resize(max_size);
-
-    char       *out = (char *)hex.c_str();
-    const char *in  = input.c_str();
-    const char *end = in + input.size();
-
-    while(in < end) {
-        memcpy(out, line_prefix.c_str(), line_prefix.size());
-        out += line_prefix.size();
-        int items=(int)(end - in);
-        if (items > bytes_per_line) {
-             items = bytes_per_line;
-        }
-
-        for (int i=0; i<items; i++) {
-
-            (*out++)='0';
-            (*out++)='x';
-            unsigned char c=*in++;
-        
-            (*out++)=((c >> 4)  < 10)  ?  '0' + (c >> 4)  : 'a' - 10 + (c >> 4);
-            (*out++)=((c & 0xf) < 10)  ?  '0' + (c & 0xf) : 'a' - 10 + (c & 0xf);
-            (*out++)=',';
-        } 
-        (*out++)='\n';
-    }
-
-    hex.resize(out - hex.c_str());
-}
-
 
 int add_c_file(std::stringstream &out, const char *label, const char *filename, std::string &raw, std::string line_prefix="  ", int bytes_per_line=20) {
     std::string hex;
@@ -147,90 +36,190 @@ int add_c_file(std::stringstream &out, const char *label, const char *filename, 
     return 0;
 }
 
-struct parts {
+struct part {
     std::string filename;
     std::string label;
     std::string raw;
 };
 
+#define CONSTBIN_LITERAL  1  // Just a straight string with length
+#define CONSTBIN_RECURSE  2  // A recursive reference to another ssi_line which should be included
+#define CONSTBIN_VARIABLE 3  // Request for a variable to be inserted.  *start is a pointer to the name, length a uid
 
-void add_parts_to_c(std::stringstream &out, std::vector<parts> &parts) {
+
+struct ssi_line {
+    int blob_index;    // index number of the blob
+    int command;       // command as specified above
+    int next;          // ssi line that follows this one.  0 for none.
+    int max_recursion; // the number of recursions this ssi uses
+};
+
+// This class contains structures used to index and parse server side includes into
+// a sort of primitive language that allows for outputting of pre-processed server side
+// includes.
+
+class constindex {
+    blobindex                  blobs;
+    blobindex                  variables;
+    std::map<std::string, int> ssi_index;   // map from ssi string to ssi index
+
+    std::vector<ssi_line>      ssi_lines;
+    
+public:
+//    int file_to_string(std::string &filestring, const std::filesystem::path &path, bool add_terminator=false);
+    int parse_ssi(const std::string &input, const std::filesystem::path &path, int start=0);
+    int add_file(const std::filesystem::path &path, bool parse_ssi=false, bool add_terminator=false);
+
+};
+
+// Look for Server Side Include comments...
+// They look like
+// <!--# tag -->
+// If the tag starts with '@' then it includes the file with the given name
+// otherwise it includes a variable with the tag name
+//
+// returns the SSI index for this object...
+
+
+int constindex::parse_ssi(const std::string &input, const std::filesystem::path &path, int start) {
+    if (0 == input.size()) {
+        return -1;
+    }
+    
+    auto index=ssi_index.find(input);
+    if (index!=ssi_index.end()) {
+        // we have already parsed this input...
+        return index->second;   // return index
+    }
+
+    size_t part_end = input.size();
+    int next = -1;
+    
+    size_t ssi_start=input.find("<!--#");
+    std::cerr << "SEARCH " << ssi_start << "  " << input << "\n";
+    if (std::string::npos != ssi_start) {
+        // We found the start of a SSI line at offset ssi_start...
+        
+        // Look for the closing tag
+        part_end=input.find("-->");
+        if (std::string::npos == part_end) {
+            // No closing tag found.  This is a problem.
+            // This is a problem we should bark loudly about...
+            std::cerr << "No closing ssi found for " << path << " starting at offset " << start + ssi_start;
+            return -1; // TODO: This probably breaks things badly.
+        }
+        
+        std::string tag = trim(input.substr(ssi_start + 5, part_end - ssi_start - 5));
+        part_end+=3;
+        
+        struct ssi_line line;
+        line.max_recursion = 0;
+
+        std::cerr << "Found ssi tag " << tag << "\n";
+
+        if (tag.at(0)=='@') { // recursively include a file...
+            const std::filesystem::path newfile = path.parent_path() /= tag.substr(1);
+            line.command    = CONSTBIN_RECURSE; // Add the file, recursively...
+            line.blob_index = add_file(newfile, true, false);
+            line.max_recursion=ssi_lines[line.blob_index].max_recursion+1;
+
+        } else { // include variable "tag"...
+            line.blob_index = variables.index_blob(tag);
+            line.command    = CONSTBIN_VARIABLE; // Substitute the given variable...
+            // This will change order in the strings which is ok but not ideal:
+        }
+        line.next       = parse_ssi(input.substr(part_end), path, start+(int)part_end);
+        next=(int)ssi_lines.size();
+        ssi_lines.push_back(line);
+    }
+    
+    // Push the amount of text we have so far....
+    if (0 != ssi_start) { // if ssi_start == 0 there isn't any text to include yet...
+        struct ssi_line line;
+        line.blob_index = blobs.index_blob(input.substr(0, ssi_start));
+        line.command    = CONSTBIN_LITERAL; // Just output this text...
+        line.next       = next;
+        line.max_recursion=ssi_lines[next].max_recursion; // this is effectively tail recursive?
+
+        next=(int)ssi_lines.size();
+        ssi_index[input] = next;
+        ssi_lines.push_back(line);
+    }
+        
+    return next;
+}
+
+int constindex::add_file(const std::filesystem::path &path, bool ssi, bool add_terminator) {
+    std::string blob;
+    int rv=file_to_string(blob, path, add_terminator);
+    if (rv) {
+        fprintf(stderr, "Unable to process: %s\n", path.filename().c_str());
+
+        return rv; // some error... we weren't able to read the file...
+    }
+    
+    auto index=ssi_index.find(blob);
+    if (index!=ssi_index.end()) {
+        // we have already parsed this input...
+        return index->second;   // return index
+    }
+    
+    if (ssi) {
+        return parse_ssi(blob, path);
+    }
+    
+    struct ssi_line line;
+    line.blob_index = blobs.index_blob(blob);
+    line.command    = CONSTBIN_LITERAL; // Just output this text...
+    line.next       = -1;
+    int ssi_offset=(int)ssi_lines.size();
+
+    ssi_index[blob] = ssi_offset;
+    ssi_lines.push_back(line);
+    
+    return ssi_offset;
+}
+
+
+
+void add_parts_to_c(std::stringstream &out, std::vector<part> &parts) {
     for (auto &part:parts) {
         add_c_file(out, part.label.c_str(), part.filename.c_str(), part.raw, "  ", 20);
     }
 }
 
-void add_parts_to_h(std::stringstream &out, std::vector<parts> &parts) {
+void add_parts_to_h(std::stringstream &out, std::vector<part> &parts) {
     for (auto &part:parts) {
         out << "extern " << part.label << "[" << part.raw.size() << "];\n";
     }
 }
 
-// Crush any characters that wouldn't be approrpiate for a C name...
-void escape_string(std::string &s) {
-    for (unsigned int i=0; i<s.size(); i++) {
-        switch(s[i]) {
-            case '/':
-            case '.':
-            case '\'':
-            case '"':
-            case '\\':
-            case ' ':
-                s[i]='_';
-                break;
-            default :
-                break;
-        }
-    }
-}
+int generate_header(std::stringstream &out, std::vector<part> &parts, const char *filename) {
+    std::string escaped(filename);
+    escape_string(escaped, "/.\\\"' -");
 
-int generate_header(std::stringstream &out, std::vector<parts> &parts, const char *filename) {
-    std::string escape(filename);
-    escape_string(escape);
 
 // It'd be cool if #pragma once always worked.. but... embedded systems... hmm.
 //
-    out << "#ifndef __" << escape << "__\n#define __" << escape << "__\n\n";
+    out << "#ifndef __" << escaped << "__\n#define __" << escaped << "__\n\n";
 
     add_parts_to_h(out, parts);
     
-    out << "\n#endif // __" << escape << "__\n\n";
+    out << "\n#endif // __" << escaped << "__\n\n";
     
     return write_to_file_if_different(filename, out.str());
 
 }
 
 
-int recurse_directory(std::vector<std::string> &paths, const std::string directory) {
-    DIR *dir = opendir(directory.c_str());
-    if (!dir) {
-        if (ENOTDIR != errno) {
-            return -1;
-        }
-        return -2;
-    }
-    int r = 0;
 
-    for (const struct dirent *f = readdir(dir); f; f = readdir(dir)) {
-        if (strcmp(f->d_name, ".") == 0 || strcmp(f->d_name, "..") == 0)
-            continue;
-        std::string filename=directory+"/"+f->d_name;
-        
-        if (DT_DIR == f->d_type || DT_UNKNOWN == f->d_type) {
-            recurse_directory(paths, filename);
-        } else {
-            paths.push_back(filename);
-        }
-    }
-    if (errno) {  // from readdir
-        r = -3;
-    }
-    if (closedir(dir)) {
-        r = -4;
-    }
-    return r;
-}
-
+struct options {
+    std::string filename;       // file path in the file system
+    std::filesystem::path url;  // url to use in the tree
+    bool parse_ssi;             // look for server side includes
+    bool add_null;              // add null terminator
+    int ssi_index;              // number of the ssi interpreter line for this entry
+};
 
 int main(int argc, char * argv[]) {
 
@@ -239,45 +228,100 @@ int main(int argc, char * argv[]) {
     const char *output_c_file=argv[1];
     const char *output_h_file=argv[2];
 
+    bool parse_ssi=false;               // only look for ssi if told to...
+    bool add_null=false;
+    
+    std::filesystem::path url_base="/"; // path in the URL mapping for files
+    
     if (argc<4) {
         fprintf(stderr, "Usage:\n");
-        fprintf(stderr, "    %s <output_c_file> <output_h_file> [files_to_encode] [<--r <directory to recurse> >]\n", argv[0]);
+        fprintf(stderr, "    %s <output_c_file> <output_h_file>", argv[0]);
+        fprintf(stderr, "    [file_to_encode] - path to file to be encoded\n");
+
+        fprintf(stderr, "    [--r <directory to recurse>] - path to directory to recursively encode using url base\n");
+        fprintf(stderr, "    [--ssi]    - do parse server side include comments in file\n");
+        fprintf(stderr, "    [--no-ssi] - don't parse server side include comments in file\n");
+        fprintf(stderr, "    [--base <path>] - set the base or prefix of the url path\n");
+        fprintf(stderr, "    [--add-null]    - add a null character to the end of the string\n");
+        fprintf(stderr, "    [--no-add-null] - do not add a null character to the end of the string\n");
         exit(-1);
     }
-    std::vector<std::string> paths;
+    
+    
+    std::vector<struct options> paths;
 
-    // Use the command line options to create a list of all the paths we care about
+    // Use the command line options to create a list of all the paths and options we care about
     for (int i=3; i<argc; i++) {
         const char *arg=argv[i];
 
         if (0==strncmp(arg, "--", 2)) {
             if (strlen(arg)>2) {
-                if (arg[2]=='r') { // recursively add directory
+                if (strcmp(arg+2, "r")==0) { // recursively add directory
                     if (argc<i+1) {
                         fprintf(stderr, "Expected but did not find directory name after --r option\n");
                         exit(-2);
                     }
                     
                     i++; // advance to directory
-                    rv=recurse_directory(paths, argv[i]);
-                    
+                    std::vector<std::pair<std::string,std::string> > p;
+                    rv=recurse_directory_with_virtual(p, argv[i], url_base);
+                    for (auto path:p) {
+                        struct options o;
+                        o.filename=path.first;
+                        o.url = path.second;
+                        o.parse_ssi = parse_ssi;
+                        o.add_null = add_null;
+
+                        paths.push_back(o);
+                    }
+                } else if (strcmp(arg+2, "no-ssi")==0) {       // do not parse files for server side include comments
+                    parse_ssi=false;
+                } else if (strcmp(arg+2, "ssi")==0) {          // parse files for server side include comments
+                    parse_ssi=true;
+                } else if (strcmp(arg+2, "base")==0) {         // Set the base part of the url
+                    i++;
+                    url_base=argv[i];
+                } else if (strcmp(arg+2, "add-null")==0) {     // add a trailing null character to the string
+                    add_null=true;
+                } else if (strcmp(arg+2, "no-add-null")==0) {  // do not add a trailing null character to the string
+                    add_null=false;
                 }
             }
         } else {
-            paths.push_back(arg);
+            
+            struct options o;
+            o.filename=arg;
+            o.url = url_base /= o.filename;
+            o.parse_ssi = parse_ssi;
+            o.add_null = add_null;
+
+            paths.push_back(o);
         }
     }
     
-    std::vector<parts> file_parts;
+    constindex index;
+    std::map<std::string, int> name_to_ssi;   // map from name string to ssi index
 
-    for (auto &filename:paths) {
-        struct parts p;
-        p.filename=filename;
+    for (auto &o:paths) {
+        int i=index.add_file(o.filename, o.parse_ssi, o.add_null);
+        if (i)
+        name_to_ssi[o.url] = i;
+        o.ssi_index = i;
+        std::cout << o.filename << " -> " << i << "\n";
+    }
+
+// At this point we've created the option vector
+    
+    std::vector<part> file_parts;
+
+    for (auto &item:paths) {
+        struct part p;
+        p.filename.assign(item.filename);
         std::string file(p.filename);
         escape_string(file);
         p.label="unsigned char " + file;
         
-        file_to_string(p.raw, filename.c_str(), true);
+        file_to_string(p.raw, p.filename.c_str(), true);
         file_parts.push_back(p);
     }
 
@@ -295,6 +339,7 @@ int main(int argc, char * argv[]) {
     if (rv!=0) {
         std::cerr << "Unable to output data to file " << output_h_file;
     }
+    
     
     return rv;
 }
