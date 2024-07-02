@@ -265,6 +265,10 @@ int main(int argc, char * argv[]) {
                     i++; // advance to directory
                     std::vector<std::pair<std::string,std::string> > p;
                     rv=recurse_directory_with_virtual(p, argv[i], url_base);
+                    if (rv<0) {
+                        fprintf(stderr, "Unable to read directory: %s", argv[i]);
+                        exit(-4);
+                    }
                     for (auto path:p) {
                         struct options o;
                         o.filename=path.first;
@@ -317,9 +321,12 @@ int main(int argc, char * argv[]) {
     for (auto &item:paths) {
         struct part p;
         p.filename.assign(item.filename);
-        std::string file(p.filename);
-        escape_string(file);
-        p.label="unsigned char " + file;
+        std::string url(item.url);
+        escape_string(url);
+        while (url.at(0)=='_') {
+            url.erase(url.begin());
+        }
+        p.label="unsigned char " + url;
         
         file_to_string(p.raw, p.filename.c_str(), true);
         file_parts.push_back(p);
