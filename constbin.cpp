@@ -326,7 +326,7 @@ int main(int argc, char * argv[]) {
         while (url.at(0)=='_') {
             url.erase(url.begin());
         }
-        p.label="const char " + url;
+        p.label="const unsigned char " + url;
         
         file_to_string(p.raw, p.filename.c_str(), true);
         file_parts.push_back(p);
