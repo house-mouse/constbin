@@ -8,6 +8,7 @@
 #include <string>       // std::string
 #include <iostream>     // std::cout
 #include <sstream>      // std::stringstream, std::stringbuf
+#include <string.h>
 
 #include "constbinutils.hpp"
 #include "blobindex.hpp"
