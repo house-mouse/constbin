@@ -329,7 +329,7 @@ int main(int argc, char * argv[]) {
         }
         p.label="const unsigned char " + url;
         
-        file_to_string(p.raw, p.filename.c_str(), true);
+        file_to_string(p.raw, p.filename.c_str(), item.add_null);
         file_parts.push_back(p);
     }
 
