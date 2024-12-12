@@ -40,6 +40,7 @@ int file_to_string(std::string &filestring, const std::filesystem::path &path, b
     fprintf(stderr, "%s is %ld bytes long\n", path.c_str(), (long)size);
 
     filestring.resize(size + (add_terminator ? 1 : 0));
+    fprintf(stderr, "resized to %ld bytes long [%d %d %d]\n", filestring.size(), size, add_terminator, size + (add_terminator ? 1 : 0));
 
     char *buf = (char *)filestring.c_str();
     if (fread(buf, size, 1, f) != 1) {
@@ -196,10 +197,10 @@ int recurse_directory_with_virtual(std::vector<std::pair<std::string, std::strin
         if (strcmp(f->d_name, ".") == 0 || strcmp(f->d_name, "..") == 0)
             continue;
         std::string filename=directory+"/"+f->d_name;
-        std::string vitual_filename=virtual_directory+"/"+f->d_name;
+        std::string vitual_filename=virtual_directory+f->d_name;
 
         if (DT_DIR == f->d_type || DT_UNKNOWN == f->d_type) {
-            recurse_directory_with_virtual(paths, filename, vitual_filename);
+            recurse_directory_with_virtual(paths, filename, vitual_filename + "/");
         } else {
             paths.push_back(std::pair<std::string, std::string>(filename, vitual_filename));
         }

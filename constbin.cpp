@@ -27,18 +27,29 @@
 
 
 
-int add_c_file(std::stringstream &out, const char *label, const char *filename, std::string &raw, std::string line_prefix="  ", int bytes_per_line=20) {
+int add_c_file(std::stringstream &out, const char *storage_type, const char *label, std::string &raw, std::string line_prefix="  ", int bytes_per_line=20) {
     std::string hex;
     
     string_to_hex(hex, raw, line_prefix, bytes_per_line);
 
-    out << label << "[" << raw.size() << "] = {\n" << hex << "};\n";
+    out << storage_type << " " << label << "[" << raw.size() << "] = {\n" << hex << "};\n";
     
     return 0;
 }
 
+
+struct options {
+    std::string filename;       // file path in the file system
+    std::filesystem::path url;  // url to use in the tree
+    const char *storage_type;   // type to use for the struct
+    const char *label_prefix;   // text to prepend before the label
+    bool parse_ssi;             // look for server side includes
+    bool add_null;              // add null terminator
+    int ssi_index;              // number of the ssi interpreter line for this entry
+};
+
 struct part {
-    std::string filename;
+    struct options options;
     std::string label;
     std::string raw;
 };
@@ -185,13 +196,13 @@ int constindex::add_file(const std::filesystem::path &path, bool ssi, bool add_t
 
 void add_parts_to_c(std::stringstream &out, std::vector<part> &parts) {
     for (auto &part:parts) {
-        add_c_file(out, part.label.c_str(), part.filename.c_str(), part.raw, "  ", 20);
+        add_c_file(out, part.options.storage_type, part.label.c_str(), part.raw, "  ", 20);
     }
 }
 
 void add_parts_to_h(std::stringstream &out, std::vector<part> &parts) {
     for (auto &part:parts) {
-        out << "extern " << part.label << "[" << part.raw.size() << "];\n";
+        out << "extern " << part.options.storage_type << " " << part.label << "[" << part.raw.size() << "];\n";
     }
 }
 
@@ -212,15 +223,42 @@ int generate_header(std::stringstream &out, std::vector<part> &parts, const char
 
 }
 
+int generate_csv_summary(std::stringstream &out, std::vector<part> &parts, const char *filename) {
+   
+    // Header
 
 
 struct options {
     std::string filename;       // file path in the file system
     std::filesystem::path url;  // url to use in the tree
+    const char *storage_type;   // type to use for the struct
+    const char *label_prefix;   // text to prepend before the label
     bool parse_ssi;             // look for server side includes
     bool add_null;              // add null terminator
     int ssi_index;              // number of the ssi interpreter line for this entry
 };
+
+
+    out << "filename,storage_type,name,size,url,parse_ssi,add_null,ssi_index\n";
+
+    for (auto &part:parts) {
+        out << part.options.filename << "," 
+            << part.options.storage_type << "," 
+            << part.label << "," 
+            << part.raw.size() << ","
+            << part.options.url << ","
+            << part.options.parse_ssi << ","
+            << part.options.add_null << ","
+            << part.options.ssi_index << ","
+
+            "\n";
+    }
+
+    return write_to_file_if_different(filename, out.str());
+
+}
+
+
 
 int main(int argc, char * argv[]) {
 
@@ -228,11 +266,14 @@ int main(int argc, char * argv[]) {
     
     const char *output_c_file=argv[1];
     const char *output_h_file=argv[2];
+    const char *csv_summary_file=NULL;
+    const char *storage_type = "const unsigned char"; // default
+    const char *label_prefix = ""; // default
 
     bool parse_ssi=false;               // only look for ssi if told to...
     bool add_null=false;
     
-    std::filesystem::path url_base="/"; // path in the URL mapping for files
+    std::filesystem::path url_base=""; // path in the URL mapping for files
     
     if (argc<4) {
         fprintf(stderr, "Usage:\n");
@@ -245,6 +286,11 @@ int main(int argc, char * argv[]) {
         fprintf(stderr, "    [--base <path>] - set the base or prefix of the url path\n");
         fprintf(stderr, "    [--add-null]    - add a null character to the end of the string\n");
         fprintf(stderr, "    [--no-add-null] - do not add a null character to the end of the string\n");
+        fprintf(stderr, "    [--csv-summary-file <path>] - generate a csv summary in path\n");
+        fprintf(stderr, "    [--storage_type <string>] - change the storage type for strings\n");
+        fprintf(stderr, "    [--label_prefix <string>] - string to prefix labels with\n");
+
+        
         exit(-1);
     }
     
@@ -276,7 +322,8 @@ int main(int argc, char * argv[]) {
                         o.url = path.second;
                         o.parse_ssi = parse_ssi;
                         o.add_null = add_null;
-
+                        o.storage_type = storage_type;
+                        o.label_prefix = label_prefix;
                         paths.push_back(o);
                     }
                 } else if (strcmp(arg+2, "no-ssi")==0) {       // do not parse files for server side include comments
@@ -284,12 +331,37 @@ int main(int argc, char * argv[]) {
                 } else if (strcmp(arg+2, "ssi")==0) {          // parse files for server side include comments
                     parse_ssi=true;
                 } else if (strcmp(arg+2, "base")==0) {         // Set the base part of the url
+                    if (argc<i+1) {
+                        fprintf(stderr, "Expected base name to follow --base option\n");
+                        exit(-2);
+                    }
                     i++;
                     url_base=argv[i];
                 } else if (strcmp(arg+2, "add-null")==0) {     // add a trailing null character to the string
                     add_null=true;
                 } else if (strcmp(arg+2, "no-add-null")==0) {  // do not add a trailing null character to the string
                     add_null=false;
+                } else if (strcmp(arg+2, "csv-summary-file")==0) {  // Generate a csv file summary
+                    if (argc<i+1) {
+                        fprintf(stderr, "Expected csv file name to follow --csv-summary-file option\n");
+                        exit(-2);
+                    }
+                    i++;
+                    csv_summary_file=argv[i];
+                } else if (strcmp(arg+2, "storage-type")==0) {  // Change the storage type
+                    if (argc<i+1) {
+                        fprintf(stderr, "Expected storage type string to follow --storge-type option\n");
+                        exit(-2);
+                    }
+                    i++;
+                    storage_type=argv[i];
+                } else if (strcmp(arg+2, "label-prefix")==0) {  // Change the storage type
+                    if (argc<i+1) {
+                        fprintf(stderr, "Expected prefix string to follow --label-prefix option\n");
+                        exit(-2);
+                    }
+                    i++;
+                    label_prefix=argv[i];
                 }
             }
         } else {
@@ -299,7 +371,8 @@ int main(int argc, char * argv[]) {
             o.url = url_base /= o.filename;
             o.parse_ssi = parse_ssi;
             o.add_null = add_null;
-
+            o.storage_type = storage_type;
+            o.label_prefix = label_prefix;
             paths.push_back(o);
         }
     }
@@ -321,15 +394,15 @@ int main(int argc, char * argv[]) {
 
     for (auto &item:paths) {
         struct part p;
-        p.filename.assign(item.filename);
+        p.options = item;
         std::string url(item.url);
         escape_string(url);
         while (url.at(0)=='_') {
             url.erase(url.begin());
         }
-        p.label="const unsigned char " + url;
+        p.label=std::string(item.label_prefix) + url;
         
-        file_to_string(p.raw, p.filename.c_str(), item.add_null);
+        file_to_string(p.raw, p.options.filename.c_str(), item.add_null);
         file_parts.push_back(p);
     }
 
@@ -348,6 +421,10 @@ int main(int argc, char * argv[]) {
         std::cerr << "Unable to output data to file " << output_h_file;
     }
     
+    if (csv_summary_file) {
+        std::stringstream csv_out;
+        rv = generate_csv_summary(csv_out, file_parts, csv_summary_file);
+    }
     
     return rv;
 }

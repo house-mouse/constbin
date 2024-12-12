@@ -12,7 +12,7 @@ A CMake macro that does all the "right" things to change directories,
 set dependencies, and correctly prefix things would be a good addition.
 
 I begrudgingly admit there may be cases where you do want to add 1 to
-the const length and add a trailing null character.
+the const length and add a trailing null character. (DONE)
 
 A templating language (perhaps using mustache notation?) wants to
 grow out of this in some unique way.
@@ -20,5 +20,5 @@ grow out of this in some unique way.
 A file walker that recursively walks a tree could be a good thing. (Done)
 
 Creating a map of actual filenames to const values could be useful
-as well.
+as well. (DONE in csv)
 
